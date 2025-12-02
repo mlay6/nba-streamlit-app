@@ -1,73 +1,85 @@
+# app.py - Minimal, stable Streamlit app
 import streamlit as st
 import pandas as pd
-import numpy as np
 import joblib
+import numpy as np
 
 st.set_page_config(page_title="NBA 5-Year Career Predictor", layout="wide")
 st.title("🏀 NBA 5-Year Career Predictor")
 
-# ---------------------------------------------------------
-# LOAD MODEL PACKAGE
-# ---------------------------------------------------------
+# Load model (plain model or package)
 try:
     pkg = joblib.load("model.joblib")
-except:
-    st.error("❌ Could not load model.joblib. Make sure it is in the repo root.")
+except Exception as e:
+    st.error("Could not load 'model.joblib'. Make sure it's in the repo root and named exactly 'model.joblib'.")
     st.stop()
 
-# Expecting saved package: { "model", "scaler", "features" }
 if isinstance(pkg, dict) and "model" in pkg:
     model = pkg["model"]
     scaler = pkg.get("scaler", None)
     features = pkg.get("features", None)
 else:
-    st.error("❌ model.joblib does not include scaler/features. Re-save model joblib correctly.")
-    st.stop()
+    model = pkg
+    scaler = None
+    features = None
 
-# ---------------------------------------------------------
-# VALIDATE FEATURES
-# ---------------------------------------------------------
-if not isinstance(features, (list, tuple)):
-    st.error("❌ 'features' inside model.joblib must be a list.")
-    st.stop()
+# Load dataset for defaults if available
+example_defaults = pd.Series(dtype=float)
+try:
+    df_example = pd.read_csv("nba_logreg.csv").drop(columns=["Name"], errors="ignore")
+    example_defaults = df_example.select_dtypes(include=[np.number]).mean(numeric_only=True)
+except Exception:
+    pass
 
-# Ensure all features are strings
-features = [str(f) for f in features]
+# If no features in package, infer numeric columns from dataset
+if not features:
+    if not example_defaults.empty:
+        features = [c for c in example_defaults.index if c != "TARGET_5Yrs"]
+    else:
+        st.error("No features found in model and no dataset to infer them from. Upload 'nba_logreg.csv' or re-save the model with features.")
+        st.stop()
 
-# ---------------------------------------------------------
-# BUILD INPUT FORM
-# ---------------------------------------------------------
-st.write("Enter player stats below:")
+# Normalize feature list
+features = [str(f) for f in (features if isinstance(features, (list,tuple,np.ndarray,pd.Index)) else [features])]
 
-cols = st.columns(2)
+# Remove duplicates while preserving order
+seen = set(); ordered = []
+for f in features:
+    if f not in seen:
+        ordered.append(f); seen.add(f)
+features = ordered
+
+st.write("Enter player stats below (use defaults or your own values).")
+
+# Two-column layout for inputs
 user_input = {}
-
-with st.form("predict"):
-    for i, col in enumerate(features):
-        default = 0.0  # if you want nicer defaults, change this later
-        user_input[col] = cols[i % 2].number_input(col, value=float(default), format="%.4f")
+cols = st.columns(2)
+with st.form("predict_form"):
+    for i, colname in enumerate(features):
+        default = 0.0
+        if colname in example_defaults.index:
+            try:
+                default = float(example_defaults[colname])
+            except Exception:
+                default = 0.0
+        user_input[colname] = cols[i % 2].number_input(colname, value=default, format="%.4f")
     submitted = st.form_submit_button("Predict")
 
-# ---------------------------------------------------------
-# PREDICT
-# ---------------------------------------------------------
 if submitted:
     try:
-        X = pd.DataFrame([[user_input[f] for f in features]], columns=features)
-
+        row = [[user_input[f] for f in features]]
+        X_new = pd.DataFrame(row, columns=features)
         if scaler is not None:
-            X_scaled = scaler.transform(X)
+            X_for_model = scaler.transform(X_new)
         else:
-            X_scaled = X.values
-
-        pred = model.predict(X_scaled)[0]
-        prob = model.predict_proba(X_scaled)[0][1] if hasattr(model, "predict_proba") else None
-
-        label = "✅ Likely 5-Year Career" if int(pred) == 1 else "❌ Not Likely"
+            X_for_model = X_new.values
+        pred = model.predict(X_for_model)
+        prob = None
+        if hasattr(model, "predict_proba"):
+            prob = model.predict_proba(X_for_model)[:,1]
+        label = "Likely 5-Year Career" if int(pred[0]) == 1 else "Not Likely"
         st.success(label)
-
         if prob is not None:
-            st.info(f"Probability: {prob:.3f}")
-
+            st.info(f"Probability: {prob[0]:.3f}")
     except Exception as e:
-        st.error(f"Prediction error: {e}")
+        st.error(f"Prediction failed: {e}")
