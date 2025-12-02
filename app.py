@@ -1,134 +1,49 @@
-# app.py - corrected (robust check for features)
 import streamlit as st
 import pandas as pd
 import joblib
-import numpy as np
 
-st.set_page_config(page_title="NBA 5-Year Career Predictor", layout="wide")
-st.title("🏀 NBA 5-Year Career Predictor")
+st.title("NBA 5-Year Career Prediction (Logistic Regression)")
 
-# -------------------------
-# Load model package
-# -------------------------
+# Load model
 try:
-    pkg = joblib.load("model.joblib")
-except Exception:
-    st.error("Could not load 'model.joblib'. Ensure it is in the repo root and named exactly 'model.joblib'.")
+    model = joblib.load("model.joblib")
+except Exception as e:
+    st.error("Could not load model.joblib. Make sure it's in the same folder as app.py.")
     st.stop()
 
-# unpack
-if isinstance(pkg, dict) and "model" in pkg:
-    model = pkg["model"]
-    scaler = pkg.get("scaler", None)
-    features = pkg.get("features", None)
+# Optional: load dataset for preview & to auto-fill inputs
+example = None
+try:
+    example = pd.read_csv("nba_logreg.csv")
+    st.subheader("Dataset preview")
+    st.write(example.head())
+    # prepare example for defaults
+    example = example.drop(columns=["Name"], errors="ignore")
+    example = example.fillna(example.mean(numeric_only=True))
+except Exception:
+    example = None
+    st.info("No nba_logreg.csv found (optional). You can still enter inputs manually.")
+
+# build feature list
+if example is not None:
+    features = [c for c in example.columns if c != "TARGET_5Yrs"]
 else:
-    model = pkg
-    scaler = None
-    features = None
-
-# -------------------------
-# Optional: load dataset for defaults
-# -------------------------
-example_defaults = pd.Series(dtype=float)
-try:
-    df_example = pd.read_csv("nba_logreg.csv").drop(columns=["Name"], errors="ignore")
-    example_defaults = df_example.select_dtypes(include=[np.number]).mean(numeric_only=True)
-except Exception:
-    pass
-
-# -------------------------
-# Normalize/validate features safely
-# -------------------------
-def flatten_features(obj):
-    if obj is None:
-        return None
-    if isinstance(obj, (pd.Index, pd.Series, np.ndarray)):
-        return list(np.array(obj).ravel().astype(str))
-    if isinstance(obj, (list, tuple)):
-        flat = []
-        for item in obj:
-            if isinstance(item, (list, tuple, np.ndarray, pd.Index, pd.Series)):
-                flat.extend(list(np.array(item).ravel().astype(str)))
-            else:
-                flat.append(str(item))
-        return flat
-    # single value fallback
-    return [str(obj)]
-
-features_list = flatten_features(features)
-
-# If features_list is None or empty, try to infer from dataset
-if features_list is None or len(features_list) == 0:
-    if not example_defaults.empty:
-        # infer numeric columns except target
-        inferred = [c for c in example_defaults.index if c != "TARGET_5Yrs"]
-        features_list = inferred
-    else:
-        st.error("No feature list found in model and no 'nba_logreg.csv' to infer features from. Please re-save model with features or upload the dataset.")
-        st.stop()
-
-# Deduplicate preserving order
-seen = set()
-final_features = []
-for f in features_list:
-    fname = str(f)
-    if fname not in seen:
-        final_features.append(fname)
-        seen.add(fname)
-features = final_features
-
-if len(features) == 0:
-    st.error("Final feature list is empty. Please provide valid features.")
+    # fallback - if you know features list, paste it here as a list of strings
+    st.error("Please upload nba_logreg.csv to the app folder OR edit app.py to list expected feature names.")
     st.stop()
 
-# -------------------------
-# Build input form (two columns for readability)
-# -------------------------
-st.markdown("Enter player stats below. Leave defaults if unsure.")
+st.subheader("Enter player stats")
 user_input = {}
-cols = st.columns(2)
+for col in features:
+    default = float(example[col].mean()) if example is not None and col in example.columns else 0.0
+    user_input[col] = st.number_input(col, value=default)
 
-with st.form("predict_form"):
-    for i, colname in enumerate(features):
-        default = 0.0
-        if colname in example_defaults.index:
-            try:
-                default = float(example_defaults[colname])
-            except Exception:
-                default = 0.0
-        user_input[colname] = cols[i % 2].number_input(colname, value=default, format="%.4f")
-    submitted = st.form_submit_button("Predict")
-
-# -------------------------
-# Predict
-# -------------------------
-if submitted:
+if st.button("Predict"):
+    X_new = pd.DataFrame([user_input])
     try:
-        # build DataFrame exactly in feature order
-        row = [[ user_input[f] for f in features ]]
-        X_new = pd.DataFrame(row, columns=features)
-
-        if scaler is not None:
-            try:
-                X_for_model = scaler.transform(X_new)
-            except Exception as e:
-                st.error(f"Scaler transform failed: {e}")
-                st.stop()
-        else:
-            X_for_model = X_new.values
-
-        pred = model.predict(X_for_model)
-        prob = None
-        if hasattr(model, "predict_proba"):
-            try:
-                prob = model.predict_proba(X_for_model)[:, 1]
-            except Exception:
-                prob = None
-
-        label = "✅ Likely 5-Year Career" if int(pred[0]) == 1 else "❌ Not Likely"
-        st.success(label)
-        if prob is not None:
-            st.info(f"Predicted probability: {prob[0]:.3f}")
-
+        pred = model.predict(X_new)[0]
+        result = "Likely 5-Year Career" if int(pred) == 1 else "Not Likely"
+        st.success(f"Prediction: **{result}**")
     except Exception as e:
-        st.error(f"Prediction failed: {e}")
+        st.error(f"Prediction error: {e}")
+
